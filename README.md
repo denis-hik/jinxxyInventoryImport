@@ -21,6 +21,10 @@
   />
 </p>
 
+## RU
+
+Editor-инструмент для Unity, который помогает авторизоваться в Jinxxy, посмотреть свои inventory items и скачать файлы продукта прямо в проект.
+
 ## EN
 
 Unity Editor tool for signing in to Jinxxy, browsing your inventory items, and downloading product files directly into the project.
@@ -33,10 +37,6 @@ Features:
 - Supported downloads: `.zip` and `.unitypackage`.
 - `.zip` files are extracted into `Assets/_DenisHik/JinxxyDownloader/zips/<product name>/`.
 - `.unitypackage` files are downloaded into the product folder and opened for Unity import.
-
-## RU
-
-Editor-инструмент для Unity, который помогает авторизоваться в Jinxxy, посмотреть свои inventory items и скачать файлы продукта прямо в проект.
 
 Основное:
 - Открытие через `Tools/Jinxxy/Open Window`.
