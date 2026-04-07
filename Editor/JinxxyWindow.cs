@@ -35,6 +35,8 @@ namespace DenisHik.JinxxyEditor
         private Texture2D _logoTexture;
         private GUIStyle _linkStyle;
         private Vector2 _scroll;
+        private int _inventoryPage = 1;
+        private int _inventoryPageCount = 1;
         private bool _isBusy;
         private bool _isLoggedIn;
         private bool _triedRestoreSession;
@@ -268,6 +270,7 @@ namespace DenisHik.JinxxyEditor
 
                         if (GUILayout.Button("Refresh", GUILayout.Height(28)))
                         {
+                            _inventoryPage = Mathf.Clamp(_inventoryPage, 1, Mathf.Max(1, _inventoryPageCount));
                             SetBusy(true, "Refreshing inventory...");
                             EditorCoroutineUtility.StartCoroutineOwnerless(RefreshAllRoutine());
                         }
@@ -291,8 +294,30 @@ namespace DenisHik.JinxxyEditor
         {
             using (new EditorGUILayout.HorizontalScope())
             {
-                GUILayout.Label("Available objects for install", EditorStyles.boldLabel);
+                GUILayout.Label("My inventory:", EditorStyles.boldLabel);
                 GUILayout.FlexibleSpace();
+
+                if (_inventoryPageCount > 1)
+                {
+                    GUI.enabled = !_isBusy && _inventoryPage > 1;
+                    if (GUILayout.Button("Prev", EditorStyles.miniButtonLeft, GUILayout.Width(48f)))
+                    {
+                        LoadInventoryPage(_inventoryPage - 1);
+                    }
+
+                    GUI.enabled = true;
+                    GUILayout.Label($"Page {_inventoryPage}/{Mathf.Max(1, _inventoryPageCount)}", EditorStyles.miniLabel, GUILayout.Width(80f));
+
+                    GUI.enabled = !_isBusy && _inventoryPage < _inventoryPageCount;
+                    if (GUILayout.Button("Next", EditorStyles.miniButtonRight, GUILayout.Width(48f)))
+                    {
+                        LoadInventoryPage(_inventoryPage + 1);
+                    }
+
+                    GUI.enabled = true;
+                    GUILayout.Space(8f);
+                }
+
                 GUILayout.Label($"Count: {_items.Count}", EditorStyles.miniLabel);
             }
         }
@@ -518,22 +543,40 @@ namespace DenisHik.JinxxyEditor
 
         private IEnumerator RefreshAllRoutine()
         {
-            yield return LoadInventoryRoutine();
+            yield return LoadInventoryRoutine(_inventoryPage);
             SetBusy(false);
             Repaint();
         }
 
-        private IEnumerator LoadInventoryRoutine()
+        private IEnumerator LoadInventoryRoutine(int page = 1)
         {
-            yield return GetInventoryRoutine(list =>
+            yield return GetInventoryRoutine(page, (list, currentPage, pageCount) =>
             {
                 _items.Clear();
                 _items.AddRange(list);
-                _statusMessage = $"Inventory loaded: {_items.Count}";
+                _inventoryPage = currentPage;
+                _inventoryPageCount = pageCount;
+                _scroll = Vector2.zero;
+                _statusMessage = $"Inventory page {_inventoryPage}/{_inventoryPageCount} loaded: {_items.Count}";
             }, error =>
             {
                 _lastError = error;
             });
+        }
+
+        private void LoadInventoryPage(int page)
+        {
+            page = Mathf.Clamp(page, 1, Mathf.Max(1, _inventoryPageCount));
+            _inventoryPage = page;
+            SetBusy(true, $"Loading inventory page {page}...");
+            EditorCoroutineUtility.StartCoroutineOwnerless(LoadInventoryPageRoutine(page));
+        }
+
+        private IEnumerator LoadInventoryPageRoutine(int page)
+        {
+            yield return LoadInventoryRoutine(page);
+            SetBusy(false);
+            Repaint();
         }
 
         private void InstallItem(InventoryObject item)
@@ -773,65 +816,58 @@ namespace DenisHik.JinxxyEditor
             }
         }
 
-        private IEnumerator GetInventoryRoutine(Action<List<InventoryObject>> onSuccess, Action<string> onFail)
+        private IEnumerator GetInventoryRoutine(int page, Action<List<InventoryObject>, int, int> onSuccess, Action<string> onFail)
         {
             var result = new List<InventoryObject>();
-            int page = 1;
-            int pageCount = 1;
+            page = Mathf.Max(1, page);
+            _statusMessage = $"Loading inventory page {page}...";
+            Repaint();
 
-            while (page <= pageCount)
+            string payload = BuildInventoryPayload(page);
+
+            using (var request = CreateGraphQlRequest(payload))
             {
-                _statusMessage = $"Loading inventory page {page}/{pageCount}...";
-                Repaint();
+                yield return request.SendWebRequest();
+                MergeResponseCookies(request);
 
-                string payload = BuildInventoryPayload(page);
-
-                using (var request = CreateGraphQlRequest(payload))
+                if (!RequestSucceeded(request))
                 {
-                    yield return request.SendWebRequest();
-                    MergeResponseCookies(request);
+                    onFail?.Invoke(GetTransportError(request));
+                    yield break;
+                }
 
-                    if (!RequestSucceeded(request))
+                string text = request.downloadHandler.text;
+                var response = JsonUtility.FromJson<InventoryResponse>(text);
+
+                string apiError = ExtractApiError(response?.errors);
+                if (!string.IsNullOrWhiteSpace(apiError))
+                {
+                    onFail?.Invoke(apiError);
+                    yield break;
+                }
+
+                var inventoryItems = response?.data?.inventory_items;
+                if (inventoryItems == null)
+                {
+                    onFail?.Invoke("Inventory response was empty.");
+                    yield break;
+                }
+
+                if (inventoryItems.payload != null)
+                {
+                    foreach (var payloadItem in inventoryItems.payload)
                     {
-                        onFail?.Invoke(GetTransportError(request));
-                        yield break;
-                    }
+                        if (payloadItem?.item == null)
+                            continue;
 
-                    string text = request.downloadHandler.text;
-                    var response = JsonUtility.FromJson<InventoryResponse>(text);
-
-                    string apiError = ExtractApiError(response?.errors);
-                    if (!string.IsNullOrWhiteSpace(apiError))
-                    {
-                        onFail?.Invoke(apiError);
-                        yield break;
-                    }
-
-                    var inventoryItems = response?.data?.inventory_items;
-                    if (inventoryItems == null)
-                    {
-                        onFail?.Invoke("Inventory response was empty.");
-                        yield break;
-                    }
-
-                    pageCount = Mathf.Max(1, inventoryItems.page_count);
-
-                    if (inventoryItems.payload != null)
-                    {
-                        foreach (var payloadItem in inventoryItems.payload)
-                        {
-                            if (payloadItem?.item == null)
-                                continue;
-
-                            result.Add(InventoryObject.FromPayload(payloadItem));
-                        }
+                        result.Add(InventoryObject.FromPayload(payloadItem));
                     }
                 }
 
-                page++;
+                int responsePage = Mathf.Max(1, inventoryItems.page);
+                int pageCount = Mathf.Max(1, inventoryItems.page_count);
+                onSuccess?.Invoke(result, responsePage, pageCount);
             }
-
-            onSuccess?.Invoke(result);
         }
 
         private IEnumerator GetInstallFilesRoutine(InventoryObject item, Action<List<ProductDownloadFile>> onSuccess, Action<string> onFail)
